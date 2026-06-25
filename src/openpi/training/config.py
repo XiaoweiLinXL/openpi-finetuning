@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.policies.unitree_g1_policy as unitree_g1_policy
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -222,6 +223,45 @@ class SimpleDataConfig(DataConfigFactory):
             self.create_base_config(assets_dirs, model_config),
             data_transforms=self.data_transforms(model_config),
             model_transforms=self.model_transforms(model_config),
+        )
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotUnitreeG1DataConfig(DataConfigFactory):
+    use_delta_joint_actions: bool = False
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform({
+                    "observation/image":             "observation.images.cam_left_high",
+                    "observation/left_wrist_image":  "observation.images.cam_left_wrist",
+                    "observation/right_wrist_image": "observation.images.cam_right_wrist",
+                    "observation/state":             "observation.state",
+                    "actions":                       "action",
+                }),
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[unitree_g1_policy.UnitreeG1Inputs(model_type=model_config.model_type)],
+            outputs=[unitree_g1_policy.UnitreeG1Outputs()],
+        )
+
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(14, -2)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
         )
 
 
@@ -558,6 +598,78 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+    # Unitree G1 Dex1 bimanual pick-and-place, 16-DoF.
+    # T2 strategy: PaliGemma LoRA + Action Expert full fine-tuning.
+    # Small dataset (~20k frames, 50 eps) → smaller bs, fewer steps than UR3 5task.
+      name="pi05_unitree_g1_insert_ethernet_cable",
+      model=pi0_config.Pi0Config(
+        pi05=True,
+        action_horizon=50,
+        #discrete_state_input=False,
+        #paligemma_variant="gemma_2b",
+        #action_expert_variant="gemma_300m",
+      ),
+      data=LeRobotUnitreeG1DataConfig(
+        repo_id="XiaoweiLinXL/unitree_insert_the_ethernet_cable_to_the_tv_box",  # ← fill in
+        default_prompt="insert the ethernet cable into the tv box",
+        base_config=DataConfig(
+            action_sequence_keys=("action",),
+        ),
+        use_delta_joint_actions=False,
+      ),
+      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+
+      batch_size=64,
+      #num_workers=8,
+      num_train_steps=50000,
+      save_interval=5000,
+      keep_period=5000,
+      #log_interval=10,
+      fsdp_devices=2,
+      #wandb_enabled=True,
+      #lr_schedule=_optimizer.CosineDecaySchedule(
+      #  warmup_steps=500,
+      #  peak_lr=2.5e-5,
+      #  decay_steps=15_000,
+      #  decay_lr=2.5e-6,
+      #),
+      #optimizer=_optimizer.AdamW(
+      #  b1=0.9,
+      #  b2=0.95,
+      #  eps=1e-8,
+      #  weight_decay=1e-4,
+      #  clip_gradient_norm=1.0,
+      #),
+      #freeze_filter=pi0_config.Pi0Config(
+      #  pi05=True,
+      #  paligemma_variant="gemma_2b_lora",
+      #  action_expert_variant="gemma_300m",
+      #).get_freeze_filter(),
+      ema_decay=0.999,
+    ),
+    TrainConfig(
+      name="pi05_unitree_g1_put_away_tools_v3",
+      model=pi0_config.Pi0Config(
+        pi05=True,
+        action_horizon=50,
+      ),
+      data=LeRobotUnitreeG1DataConfig(
+        repo_id="XiaoweiLinXL/put-away-tools-v3",
+        default_prompt="put the battery into the battery bin and the screw driver into the philips bin",
+        base_config=DataConfig(
+            action_sequence_keys=("action",),
+        ),
+        use_delta_joint_actions=False,
+      ),
+      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+      batch_size=64,
+      num_train_steps=50000,
+      save_interval=5000,
+      keep_period=5000,
+      fsdp_devices=2,
+      ema_decay=0.999,
+    ),
     #
     # Inference Aloha configs.
     #
