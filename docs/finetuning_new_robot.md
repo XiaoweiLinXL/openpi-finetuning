@@ -105,7 +105,8 @@ TrainConfig(
     weight_loader=weight_loaders.CheckpointWeightLoader(
         "gs://openpi-assets/checkpoints/pi05_base/params"
     ),
-    batch_size=64,
+    batch_size=32,
+    num_workers=8,     # default of 2 is too slow for video datasets — causes ~30s/step vs ~2s/step
     num_train_steps=50000,
     save_interval=5000,
     keep_period=5000,
@@ -166,3 +167,4 @@ Checkpoints are saved to `checkpoints/pi05_<robot_name>/<run_name>/` every `save
 | `RuntimeError: Could not open input file` | Corrupted video (parallel writes) | Re-transfer dataset with a single transfer |
 | `evdev build failure` | Missing C headers | `sudo apt-get install -y build-essential linux-libc-dev` |
 | `wandb` login error | W&B not configured | Add `wandb_enabled=False` to `TrainConfig` |
+| `ValueError: API key must be 40 characters` | New W&B keys are 86 chars, login flow rejects them | Set via env var instead: `echo 'export WANDB_API_KEY=...' >> ~/.bashrc` |
