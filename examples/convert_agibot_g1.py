@@ -10,9 +10,9 @@ import tempfile
 import h5py
 import numpy as np
 from PIL import Image
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-RAW_DIR = pathlib.Path.home() / "agibot_g1_data/data/record"
+RAW_DIR = pathlib.Path.home() / "agibot_g1_raw/data/record"
 REPO_ID = "local/agibot_g1_omnipicker"
 TARGET_FPS = 30
 IMAGE_H, IMAGE_W = 480, 640
@@ -64,23 +64,13 @@ def find_valid_episodes(raw_dir: pathlib.Path) -> list[pathlib.Path]:
     valid = []
     for meta_path in sorted(raw_dir.glob("*/meta_info.json")):
         m = json.loads(meta_path.read_text())
-        if not (
+        if (
             (m.get("data_validate") or {}).get("validate") is True
             and (m.get("integrity") or {}).get("integrity") is True
             and m.get("fps_validate") is True
             and (m.get("file_size") or 0) > 0
         ):
-            continue
-        ep_dir = meta_path.parent
-        # Skip episodes where HDF5 action data is actually empty (metadata can lie)
-        try:
-            with h5py.File(ep_dir / "record/raw_joints.h5", "r") as f:
-                if f["action/joint/timestamp"].shape[0] == 0:
-                    print(f"  Skipping {ep_dir.name[:8]}: empty action data")
-                    continue
-        except Exception:
-            continue
-        valid.append(ep_dir)
+            valid.append(meta_path.parent)
     return sorted(valid)
 
 
@@ -171,14 +161,15 @@ def process_episode(ep_dir: pathlib.Path, dataset: LeRobotDataset) -> int:
             ]).astype(np.float32)
 
             dataset.add_frame({
+                "task": TASK,
                 "observation.state": state_vec,
                 "action": action_vec,
                 "observation.images.hand_left":  load_image_resized(hand_left_imgs[nearest_idx(hand_left_ts, t)]),
                 "observation.images.hand_right": load_image_resized(hand_right_imgs[nearest_idx(hand_right_ts, t)]),
                 "observation.images.head_color": load_image_resized(head_frames[nearest_idx(head_ts, t)]),
-            }, task=TASK)
+            })
 
-        dataset.save_episode()
+        dataset.save_episode(task=TASK)
         return len(grid)
 
 
@@ -187,34 +178,24 @@ def main():
     episodes = find_valid_episodes(RAW_DIR)
     if test_only:
         episodes = episodes[:1]
-    print(f"Found {len(episodes)} valid episodes (test={test_only})")
+    print(f"Processing {len(episodes)} episodes (test={test_only})")
 
-    # Resume support: detect existing dataset and skip already-done episodes
-    dataset_root = pathlib.Path.home() / ".cache/huggingface/lerobot" / REPO_ID
-    if not test_only and dataset_root.exists() and (dataset_root / "meta/info.json").exists():
-        dataset = LeRobotDataset(repo_id=REPO_ID, root=dataset_root)
-        dataset.start_image_writer(num_processes=2, num_threads=4)
-        num_done = dataset.num_episodes
-        print(f"Resuming: {num_done} episodes already done, skipping to episode {num_done + 1}")
-        episodes = episodes[num_done:]
-    else:
-        dataset = LeRobotDataset.create(
-            repo_id=REPO_ID,
-            fps=TARGET_FPS,
-            robot_type="agibot-g1",
-            features=FEATURES,
-            image_writer_threads=4,
-            image_writer_processes=2,
-        )
-        num_done = 0
+    dataset = LeRobotDataset.create(
+        repo_id=REPO_ID,
+        fps=TARGET_FPS,
+        robot_type="agibot-g1",
+        features=FEATURES,
+        image_writer_threads=4,
+        image_writer_processes=2,
+    )
 
     total_frames = 0
     for i, ep_dir in enumerate(episodes):
-        print(f"[{num_done + i + 1}/{num_done + len(episodes)}] {ep_dir.name}")
+        print(f"[{i+1}/{len(episodes)}] {ep_dir.name}")
         total_frames += process_episode(ep_dir, dataset)
 
-    dataset.stop_image_writer()
-    print(f"\nDone! {num_done + len(episodes)} episodes total, {total_frames} new frames")
+    dataset.consolidate(run_compute_stats=False)
+    print(f"\nDone! {len(episodes)} episodes, {total_frames} frames")
     print(f"Dataset: {dataset.root}")
 
 
