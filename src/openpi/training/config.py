@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.policies.agibot_g1_policy as agibot_g1_policy
 import openpi.policies.go2_suction_policy as go2_suction_policy
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
@@ -255,6 +256,45 @@ class LeRobotGo2SuctionDataConfig(DataConfigFactory):
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotAgibotG1DataConfig(DataConfigFactory):
+    """Data config for fine-tuning on an AgiBot G1 LeRobot v2.1 dataset.
+
+    The G1 dataset stores an 18-dim state/action vector (14 arm joints + 2 waist + 2 effectors)
+    and three cameras (head_color, hand_left, hand_right). Actions are absolute joint positions.
+    """
+
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/cam_head_color": "observation.images.head_color",
+                        "observation/cam_hand_left":  "observation.images.hand_left",
+                        "observation/cam_hand_right": "observation.images.hand_right",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[agibot_g1_policy.AgibotG1Inputs(model_type=model_config.model_type)],
+            outputs=[agibot_g1_policy.AgibotG1Outputs()],
+        )
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
@@ -680,6 +720,29 @@ _CONFIGS = [
             action_sequence_keys=("action",),
         ),
         use_delta_joint_actions=False,
+      ),
+      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+      batch_size=32,
+      num_workers=8,
+      num_train_steps=50000,
+      save_interval=5000,
+      keep_period=5000,
+      fsdp_devices=4,
+      ema_decay=0.999,
+      wandb_enabled=True,
+    ),
+    TrainConfig(
+      name="pi05_agibot_g1",
+      model=pi0_config.Pi0Config(
+        pi05=True,
+        action_horizon=50,
+      ),
+      data=LeRobotAgibotG1DataConfig(
+        repo_id="XiaoweiLinXL/agibot-g1-omnipicker",
+        default_prompt="pick and place objects using the omnipicker",
+        base_config=DataConfig(
+            action_sequence_keys=("action",),
+        ),
       ),
       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
       batch_size=32,
