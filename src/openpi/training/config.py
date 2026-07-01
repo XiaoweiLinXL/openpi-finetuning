@@ -985,6 +985,22 @@ _CONFIGS = [
       fsdp_devices=2,
       ema_decay=0.999,
     ),
+    TrainConfig(
+        name="pi05_g1_put_away_tools_arman",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=30),  # 30 fps -> ~1s action chunk
+        data=LeRobotUnitreeG1DataConfig(
+            repo_id="XiaoweiLinXL/pi05-unitree-g1-put-away-tools-v2.1",
+            default_prompt="put the battery into the battery bin and the screw driver into the Philips bin",
+            base_config=DataConfig(
+                # Read the action sequence from the raw LeRobot "action" column.
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        batch_size=32,
+        ema_decay=0.999,
+    ),
     # Single-object Unitree G1 pick task. Reuses the same G1 transforms; norm stats use plain quantile
     # (q01/q99) here -- this dataset's action absmax under quantile is only ~2.0, so quantile preserves
     # joint resolution without the absmax blow-up that forced min/max on the put-away-tools dataset.
